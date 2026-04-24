@@ -1,0 +1,34 @@
+{
+  "No Intervention": {
+    "mean_reward": 46.589002889165364,
+    "std_reward": 30.69473581403421,
+    "mean_spo2_min": 72.0089396673527,
+    "mean_events": 2.05,
+    "std_events": 1.023474474522936,
+    "mean_arousals": 36.15
+  },
+  "Random": {
+    "mean_reward": 95.97747825748611,
+    "std_reward": 21.656863380449913,
+    "mean_spo2_min": 81.58464169615914,
+    "mean_events": 1.9,
+    "std_events": 1.7291616465790582,
+    "mean_arousals": 84.4
+  },
+  "Rule-Based": {
+    "mean_reward": 51.81409701998582,
+    "std_reward": 28.414979900639782,
+    "mean_spo2_min": 73.50823459471556,
+    "mean_events": 1.85,
+    "std_events": 0.9096702699330127,
+    "mean_arousals": 45.15
+  },
+  "SAC (Trained)": {
+    "mean_reward": 115.98889413600163,
+    "std_reward": 27.683298011200453,
+    "mean_spo2_min": 87.18089761345001,
+    "mean_events": 2.1,
+    "std_events": 1.7,
+    "mean_arousals": 68.9
+  }
+}
