@@ -1,70 +1,21 @@
 """
-OSA Acoustic Intervention System - Main Entry Point
-======================================================
+OSA Acoustic Intervention System V2 - Main Entry Point
+=======================================================
 
-Provides the complete integrated system and demonstration script.
+V2 Classification-Based Architecture using real UCDDB data.
 
-System architecture:
-
-  ┌──────────────────────────────────────────────────────────────┐
-  │                    EARPHONE DEVICE                           │
-  │                                                              │
-  │  ┌─────────┐  ┌─────────┐  ┌────────┐  ┌──────────┐        │
-  │  │ RIP Band│  │ Mic     │  │ IMU    │  │ SpO2     │        │
-  │  │ (chest/ │  │ (snore  │  │(6-axis │  │(pulse ox)│        │
-  │  │ abdomen)│  │ audio)  │  │accel/  │  │          │        │
-  │  │         │  │         │  │gyro)   │  │          │        │
-  │  └────┬────┘  └────┬────┘  └───┬────┘  └────┬─────┘        │
-  │       │            │           │             │               │
-  │  ┌────▼────────────▼───────────▼─────────────▼──────────┐   │
-  │  │        Multimodal Feature Extractor (33-dim)         │   │
-  │  │  • Bandpass filtering  • Online z-score normalization│   │
-  │  │  • Phase angle calc    • Spectral analysis           │   │
-  │  └─────────────────────┬────────────────────────────────┘   │
-  │                        │                                     │
-  │  ┌─────────────────────▼────────────────────────────────┐   │
-  │  │        OSA Risk Predictor (Bi-LSTM + Attention)      │   │
-  │  │  • Temporal pattern recognition (10-epoch lookback)  │   │
-  │  │  • Risk score + severity + time-to-event output      │   │
-  │  └─────────────────────┬────────────────────────────────┘   │
-  │                        │                                     │
-  │  ┌─────────────────────▼────────────────────────────────┐   │
-  │  │     Hierarchical Intervention Protocol (FSM)         │   │
-  │  │  MONITOR → DETECT → DIRECTIONAL CUE → EVALUATE      │   │
-  │  │                              ↓ (if no response)      │   │
-  │  │                       SHORT BURST CUE → COOLDOWN     │   │
-  │  └─────────────────────┬────────────────────────────────┘   │
-  │                        │                                     │
-  │  ┌─────────────────────▼────────────────────────────────┐   │
-  │  │     SAC RL Agent (6D Continuous Action Space)         │   │
-  │  │  Action: [Loudness, Frequency, Duration,             │   │
-  │  │          Timing, ITD, ILD]                           │   │
-  │  │  • Personalized to patient physiology                │   │
-  │  │  • Minimal effective dose optimization               │   │
-  │  └─────────────────────┬────────────────────────────────┘   │
-  │                        │                                     │
-  │  ┌─────────────────────▼────────────────────────────────┐   │
-  │  │     Audio Synthesizer (Binaural Rendering)           │   │
-  │  │  • ITD/ILD spatial audio for directional cues        │   │
-  │  │  • Fade-in/out envelope for comfort                  │   │
-  │  │  • Safety-limited output amplitude                   │   │
-  │  └─────────────────────┬────────────────────────────────┘   │
-  │                        │                                     │
-  │                   ┌────▼────┐                                │
-  │                   │Speaker  │                                │
-  │                   │(L/R ear)│                                │
-  │                   └─────────┘                                │
-  └──────────────────────────────────────────────────────────────┘
+System pipeline:
+  Sensors → Features (8-dim) → State Classifier → Decision Engine → Audio
 
 Usage:
-  # Training
-  python main.py --mode train --severity moderate --timesteps 500000
-  
-  # Evaluation  
-  python main.py --mode evaluate --model-path ./osa_models/best/best_model
-  
-  # Simulation demo
-  python main.py --mode demo --episodes 3
+  # Demo mode (simulated data)
+  python -m osa_system.main --mode demo --episodes 3
+
+  # Evaluate on real UCDDB data
+  python -m osa_system.main --mode evaluate
+
+  # Train classifier on UCDDB
+  python -m osa_system.main --mode train
 """
 
 import os
@@ -75,395 +26,190 @@ import numpy as np
 import torch
 from typing import Dict, List, Optional
 from datetime import datetime
+from collections import Counter
 
-# System components
-from osa_system.signal_processing import (
-    SignalConfig, MultimodalFeatureExtractor
+# V2 System components
+from .system_v2 import (
+    OSASystemV2, StateClassifier, DecisionEngine, TrendEncoder,
+    OSAState, STATE_NAMES, InterventionDecision
 )
-from osa_system.risk_predictor import OSARiskPredictor
-from osa_system.environment import (
-    OSAInterventionEnv, PatientProfile, AirwayState, SleepStage
-)
-from osa_system.intervention_protocol import (
-    InterventionProtocol, InterventionConfig, ProtocolState
-)
-from osa_system.rl_agent import (
-    OSAAgentTrainer, TrainingConfig, 
-    RuleBasedAgent, NoInterventionAgent, RandomAgent
-)
-from osa_system.audio_synthesis import AudioSynthesizer
+from .signal_processing import SignalConfig, MultimodalFeatureExtractor
+from .audio_synthesis import AudioSynthesizer, AudioConfig
+from .ucddb_parser import build_ucddb_dataset, SleepState, EpochLabel
 
 
 # ==============================================================================
-# Integrated System
+# Demo Mode - Simulated Sleep Session
 # ==============================================================================
-
-class OSAInterventionSystem:
-    """
-    Complete integrated OSA acoustic intervention system.
-    
-    Orchestrates all components for real-time operation:
-      Sensors → Features → Risk → Protocol → RL Agent → Audio → Earphone
-    """
-    
-    def __init__(
-        self,
-        model_path: Optional[str] = None,
-        config: Optional[SignalConfig] = None,
-        intervention_config: Optional[InterventionConfig] = None,
-    ):
-        self.config = config or SignalConfig()
-        
-        # Initialize components
-        self.feature_extractor = MultimodalFeatureExtractor(self.config)
-        self.risk_predictor = OSARiskPredictor()
-        self.protocol = InterventionProtocol(intervention_config)
-        self.audio_synth = AudioSynthesizer()
-        
-        # Feature history for risk prediction
-        self.feature_history: List[np.ndarray] = []
-        self.max_history = 10  # Look-back window
-        
-        # Load RL model if provided
-        self.rl_model = None
-        if model_path and os.path.exists(model_path + '.zip'):
-            from stable_baselines3 import SAC
-            self.rl_model = SAC.load(model_path)
-            print(f"[System] Loaded RL model from {model_path}")
-        else:
-            print("[System] No RL model loaded, using protocol-only mode")
-    
-    def process_epoch(
-        self,
-        thorax: np.ndarray,
-        abdomen: np.ndarray,
-        audio: np.ndarray,
-        accel: np.ndarray,
-        gyro: Optional[np.ndarray],
-        spo2_values: np.ndarray,
-    ) -> Dict:
-        """
-        Process one epoch of sensor data and generate intervention.
-        
-        This is the main real-time processing loop entry point.
-        Called every 30 seconds with buffered sensor data.
-        
-        Returns:
-            Dict with:
-              - intervention_action: 6D action vector
-              - left_audio / right_audio: stereo audio arrays (if intervention)
-              - risk_score: current OSA risk
-              - protocol_info: intervention protocol state info
-              - features: extracted feature dict
-        """
-        # 1. Extract multimodal features
-        feature_vector, raw_features = self.feature_extractor.extract_all(
-            thorax, abdomen, audio, accel, gyro, spo2_values
-        )
-        
-        # 2. Update feature history for temporal prediction
-        self.feature_history.append(feature_vector)
-        if len(self.feature_history) > self.max_history:
-            self.feature_history = self.feature_history[-self.max_history:]
-        
-        # 3. Predict OSA risk
-        if len(self.feature_history) >= 3:
-            # Pad to fixed sequence length
-            seq = np.array(self.feature_history)
-            if len(seq) < self.max_history:
-                pad = np.zeros((self.max_history - len(seq), seq.shape[1]))
-                seq = np.vstack([pad, seq])
-            
-            risk_output = self.risk_predictor.predict(seq)
-            risk_score = risk_output['risk_score']
-        else:
-            risk_score = 0.0
-        
-        # 4. Get RL agent action (if available)
-        rl_action = None
-        if self.rl_model is not None:
-            # Convert features to environment-compatible observation
-            obs = self._features_to_obs(feature_vector, raw_features)
-            rl_action, _ = self.rl_model.predict(obs, deterministic=True)
-        
-        # 5. Protocol decides intervention
-        is_supine = raw_features['imu']['is_supine'] > 0.5
-        spo2 = raw_features['spo2']['spo2_current']
-        airway_state = 0  # Would come from more detailed processing
-        is_aroused = False  # Would come from EEG or movement detection
-        
-        # Estimate airway state from respiratory features
-        if raw_features['rip']['is_paradoxical'] > 0.5:
-            airway_state = 2  # Likely complete obstruction
-        elif raw_features['rip']['phase_angle'] > 60:
-            airway_state = 1  # Partial obstruction
-        
-        action, protocol_info = self.protocol.decide(
-            risk_score=risk_score,
-            is_supine=is_supine,
-            spo2=spo2,
-            airway_state=airway_state,
-            is_aroused=is_aroused,
-            rl_action=rl_action,
-        )
-        
-        # 6. Generate audio if intervening
-        left_audio = None
-        right_audio = None
-        if action[0] > 0.05:  # Loudness above threshold
-            left_audio, right_audio = self.audio_synth.action_to_audio(action)
-        
-        return {
-            'intervention_action': action,
-            'left_audio': left_audio,
-            'right_audio': right_audio,
-            'risk_score': risk_score,
-            'protocol_info': protocol_info,
-            'features': raw_features,
-            'feature_vector': feature_vector,
-        }
-    
-    def _features_to_obs(
-        self, 
-        feature_vector: np.ndarray,
-        raw_features: Dict,
-    ) -> np.ndarray:
-        """Convert extracted features to RL observation format."""
-        # Map from feature extractor format to environment observation format
-        rip = raw_features['rip']
-        audio = raw_features['audio']
-        imu = raw_features['imu']
-        spo2 = raw_features['spo2']
-        
-        obs = np.array([
-            spo2['spo2_normalized'],
-            np.clip(spo2['desat_slope'] / 3.0, -1, 1),
-            spo2['hypoxemia_risk'],
-            0.0,  # PaCO2 (not available from sensors, estimated)
-            
-            rip['resp_rate'] / 30.0,
-            rip['total_amplitude'],
-            rip['resp_effort'],
-            rip['phase_angle'] / 180.0,
-            
-            1.0 - rip['is_paradoxical'],  # Airway patency proxy
-            rip['is_paradoxical'] / 2.0 + (rip['phase_angle'] > 60) * 0.5,
-            0.0,  # Obstruction duration (estimated)
-            
-            audio['snore_rms'] * 10,
-            audio['snore_f0'] / 500.0,
-            audio['snore_pattern'] / 2.0,
-            
-            imu['is_supine'],
-            imu['pitch'] / 90.0,
-            
-            0.0,  # Sleep stage (estimated)
-            0.5,  # Sleep depth (estimated)
-            
-            0.0,  # Intervention level
-            1.0,  # Epochs since intervention
-            0.0,  # Arousal flag
-        ], dtype=np.float32)
-        
-        return obs
-
-
-# ==============================================================================
-# Training & Evaluation Functions
-# ==============================================================================
-
-def train_agent(args):
-    """Train the RL agent."""
-    config = TrainingConfig(
-        algorithm=args.algorithm,
-        total_timesteps=args.timesteps,
-        patient_severity=args.severity,
-        save_dir=args.save_dir,
-        log_dir=args.log_dir,
-        use_curriculum=args.curriculum,
-        buffer_size=min(args.timesteps, 100_000),
-    )
-    
-    trainer = OSAAgentTrainer(config)
-    trainer.setup()
-    
-    print("\n" + "="*70)
-    print("  OSA Acoustic Intervention System - RL Agent Training")
-    print("="*70)
-    print(f"  Algorithm:      {config.algorithm}")
-    print(f"  Timesteps:      {config.total_timesteps:,}")
-    print(f"  Patient type:   {config.patient_severity}")
-    print(f"  Curriculum:     {config.use_curriculum}")
-    print(f"  Save dir:       {config.save_dir}")
-    print("="*70 + "\n")
-    
-    # Train
-    results = trainer.train()
-    
-    # Evaluate
-    print("\n" + "="*70)
-    print("  Post-Training Evaluation")
-    print("="*70 + "\n")
-    
-    eval_metrics = trainer.evaluate(n_episodes=20)
-    
-    for k, v in eval_metrics.items():
-        print(f"  {k}: {v:.4f}")
-    
-    # Save metrics
-    metrics_path = os.path.join(args.save_dir, 'training_metrics.json')
-    with open(metrics_path, 'w') as f:
-        json.dump({**results, **eval_metrics}, f, indent=2)
-    
-    print(f"\n  Metrics saved to: {metrics_path}")
-    
-    return eval_metrics
-
-
-def evaluate_agents(args):
-    """Compare RL agent against baselines."""
-    print("\n" + "="*70)
-    print("  OSA Agent Comparative Evaluation")
-    print("="*70 + "\n")
-    
-    env = OSAInterventionEnv(
-        severity=args.severity,
-        max_epochs=240,
-        randomize_patient=True,
-        seed=42,
-    )
-    
-    agents = {
-        'No Intervention': NoInterventionAgent(),
-        'Random': RandomAgent(env.action_space),
-        'Rule-Based': RuleBasedAgent(),
-    }
-    
-    # Load RL agent if available
-    if args.model_path and os.path.exists(args.model_path + '.zip'):
-        from stable_baselines3 import SAC
-        agents['SAC (Trained)'] = SAC.load(args.model_path)
-    
-    results = {}
-    n_episodes = args.n_eval_episodes
-    
-    for name, agent in agents.items():
-        print(f"\n  Evaluating: {name}")
-        print(f"  {'─'*50}")
-        
-        all_rewards = []
-        all_spo2_mins = []
-        all_events = []
-        all_arousals = []
-        
-        for ep in range(n_episodes):
-            obs, _ = env.reset(seed=42 + ep)
-            episode_reward = 0
-            done = False
-            
-            while not done:
-                action, _ = agent.predict(obs, deterministic=True)
-                obs, reward, terminated, truncated, info = env.step(action)
-                episode_reward += reward
-                done = terminated or truncated
-            
-            all_rewards.append(episode_reward)
-            all_spo2_mins.append(env.episode_spo2_min)
-            all_events.append(env.episode_events)
-            all_arousals.append(env.episode_arousals)
-        
-        metrics = {
-            'mean_reward': float(np.mean(all_rewards)),
-            'std_reward': float(np.std(all_rewards)),
-            'mean_spo2_min': float(np.mean(all_spo2_mins)),
-            'mean_events': float(np.mean(all_events)),
-            'std_events': float(np.std(all_events)),
-            'mean_arousals': float(np.mean(all_arousals)),
-        }
-        results[name] = metrics
-        
-        print(f"    Reward:        {metrics['mean_reward']:.2f} ± {metrics['std_reward']:.2f}")
-        print(f"    SpO2 min:      {metrics['mean_spo2_min']:.1f}%")
-        print(f"    OSA events:    {metrics['mean_events']:.1f} ± {metrics['std_events']:.1f}")
-        print(f"    Arousals:      {metrics['mean_arousals']:.1f}")
-    
-    # Save comparison
-    comparison_path = os.path.join(args.save_dir, 'agent_comparison.json')
-    os.makedirs(args.save_dir, exist_ok=True)
-    with open(comparison_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    print(f"\n  Comparison saved to: {comparison_path}")
-    return results
-
 
 def run_demo(args):
-    """Run a demonstration of the full system."""
+    """Run a demonstration of the V2 system with simulated data."""
     print("\n" + "="*70)
-    print("  OSA Acoustic Intervention System - Live Demo")
+    print("  OSA Acoustic Intervention System V2 - Demo Mode")
     print("="*70 + "\n")
-    
-    # Create simulated environment
-    env = OSAInterventionEnv(
-        severity=args.severity,
-        max_epochs=60,  # 30 minutes for demo
-        randomize_patient=False,
-        render_mode='ansi',
-        seed=42,
-    )
-    
-    # Create protocol
-    protocol = InterventionProtocol()
+
+    # Initialize V2 system
+    system = OSASystemV2()
     audio_synth = AudioSynthesizer()
-    
-    # Use rule-based agent for demo (no training needed)
-    agent = RuleBasedAgent()
-    
+
+    # Load trained classifier if available
+    model_path = args.model_path or './osa_models_v2/classifier_real.pt'
+    if os.path.exists(model_path):
+        system.classifier.load_state_dict(torch.load(model_path))
+        print(f"[System] Loaded classifier from {model_path}")
+    else:
+        print(f"[System] No trained model found, using untrained classifier")
+
     for episode in range(args.episodes):
         print(f"\n{'━'*60}")
-        print(f"  Episode {episode + 1}/{args.episodes}")
+        print(f"  Episode {episode + 1}/{args.episodes} - Simulated Sleep Session")
         print(f"{'━'*60}")
-        
-        obs, info = env.reset(seed=42 + episode)
-        done = False
-        step = 0
-        
-        while not done:
-            # Agent decides action
-            action, _ = agent.predict(obs, deterministic=True)
-            
-            # Step environment
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            step += 1
-            
-            # Display status every 10 epochs
-            if step % 10 == 0 or action[0] > 0.05:
-                render_str = env.render()
-                if render_str:
-                    print(f"\n{render_str}")
-                
-                if action[0] > 0.05:
-                    print(f"  → INTERVENTION: loudness={action[0]:.2f}, "
-                          f"freq={action[1]:.0f}Hz, dur={action[2]:.1f}s, "
-                          f"ITD={action[4]:.1f}ms, ILD={action[5]:.0f}dB")
-                    
-                    # Generate audio (demo)
+
+        system.reset()
+
+        # Simulate 30 minutes (60 epochs)
+        n_epochs = 60
+        rng = np.random.default_rng(42 + episode)
+
+        for epoch in range(n_epochs):
+            # Simulate feature vector (8-dim UCDDB-aligned)
+            # Randomly generate sleep states with realistic distribution
+            state_prob = rng.random()
+            if state_prob < 0.05:  # 5% awake
+                features = rng.uniform([0.3, 0.3, 0.2, -0.05, 0.0, 0.0, 0.95, -0.01],
+                                      [0.8, 0.8, 0.4, 0.05, 0.05, 1.0, 0.98, 0.01], size=8)
+                is_supine = rng.random() < 0.3
+                spo2 = 96.0
+            elif state_prob < 0.60:  # 55% normal sleep
+                features = rng.uniform([0.4, 0.4, 0.15, -0.1, 0.0, 0.0, 0.94, -0.02],
+                                      [0.7, 0.7, 0.35, 0.1, 0.1, 1.0, 0.97, 0.02], size=8)
+                is_supine = rng.random() < 0.5
+                spo2 = 95.0
+            elif state_prob < 0.85:  # 25% snoring
+                features = rng.uniform([0.3, 0.3, 0.1, 0.1, 0.3, 0.0, 0.90, -0.05],
+                                      [0.6, 0.6, 0.3, 0.4, 0.7, 1.0, 0.94, 0.0], size=8)
+                is_supine = rng.random() < 0.7
+                spo2 = 92.0
+            else:  # 15% apnea
+                features = rng.uniform([0.1, 0.1, 0.05, 0.4, 0.5, 0.0, 0.80, -0.1],
+                                      [0.3, 0.3, 0.15, 0.8, 0.9, 1.0, 0.88, -0.03], size=8)
+                is_supine = rng.random() < 0.8
+                spo2 = 88.0
+
+            # Process epoch
+            result = system.process_epoch(
+                feature_vector=features.astype(np.float32),
+                is_supine=is_supine,
+                spo2=spo2,
+            )
+
+            # Display every 10 epochs or when intervening
+            if epoch % 10 == 0 or result['decision'].should_intervene:
+                time_min = epoch * 0.5
+                print(f"\n  Epoch {epoch} ({time_min:.1f} min)")
+                print(f"    State: {result['state_name']} (severity={result['severity']:.2f})")
+                print(f"    Position: {'Supine' if is_supine else 'Non-supine'}, SpO2={spo2:.1f}%")
+
+                if result['decision'].should_intervene:
+                    dec = result['decision']
+                    print(f"    → INTERVENTION: {dec.intervention_type}")
+                    print(f"      Reason: {dec.reason}")
+                    print(f"      Params: loudness={dec.suggested_loudness:.2f}, "
+                          f"freq={dec.suggested_frequency:.0f}Hz, "
+                          f"dur={dec.suggested_duration:.1f}s")
+
+                    # Generate audio
+                    action = np.array([
+                        dec.suggested_loudness,
+                        dec.suggested_frequency,
+                        dec.suggested_duration,
+                        0.5,  # timing
+                        dec.suggested_itd,
+                        dec.suggested_ild,
+                    ])
                     left, right = audio_synth.action_to_audio(action)
-                    print(f"    Audio generated: {len(left)} samples, "
-                          f"peak L={np.max(np.abs(left)):.3f} R={np.max(np.abs(right)):.3f}")
-                
-                print(f"  Reward: {reward:.3f}")
-        
+                    if left is not None:
+                        print(f"      Audio: {len(left)} samples, "
+                              f"peak L={np.max(np.abs(left)):.3f} R={np.max(np.abs(right)):.3f}")
+
         # Episode summary
+        summary = system.get_session_summary()
         print(f"\n  Episode Summary:")
-        print(f"    Total reward:  {sum(env.episode_rewards):.2f}")
-        print(f"    SpO2 minimum:  {env.episode_spo2_min:.1f}%")
-        print(f"    OSA events:    {env.episode_events}")
-        print(f"    Arousals:      {env.episode_arousals}")
-    
+        print(f"    Duration: {summary['total_minutes']:.1f} minutes")
+        print(f"    Interventions: {summary['interventions']}")
+        print(f"    Intervention rate: {summary['intervention_rate']:.1%}")
+        print(f"    State distribution:")
+        for state_name, pct in summary['state_distribution'].items():
+            print(f"      {state_name}: {pct:.1%}")
+
     print(f"\n{'='*70}")
     print(f"  Demo complete!")
+    print(f"{'='*70}\n")
+
+
+# ==============================================================================
+# Evaluation Mode - Real UCDDB Data
+# ==============================================================================
+
+def run_evaluation(args):
+    """Evaluate V2 system on real UCDDB data."""
+    print("\n" + "="*70)
+    print("  OSA System V2 - Evaluation on Real UCDDB Data")
+    print("="*70 + "\n")
+
+    # Import evaluation logic
+    from .evaluate_real_data import evaluate_all_subjects
+
+    # Load UCDDB dataset
+    print("Loading UCDDB dataset...")
+    dataset = build_ucddb_dataset()
+    print(f"Loaded {len(dataset)} subjects\n")
+
+    # Run evaluation
+    results = evaluate_all_subjects(dataset, verbose=args.verbose)
+
+    # Save results
+    os.makedirs(args.save_dir, exist_ok=True)
+    results_path = os.path.join(args.save_dir, 'evaluation_results.json')
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n  Results saved to: {results_path}")
+    print(f"{'='*70}\n")
+
+
+# ==============================================================================
+# Training Mode - Train Classifier
+# ==============================================================================
+
+def run_training(args):
+    """Train the state classifier on UCDDB data."""
+    print("\n" + "="*70)
+    print("  OSA System V2 - Classifier Training")
+    print("="*70 + "\n")
+
+    # Import training logic
+    from .train_classifier import train_loso_cv
+
+    # Load UCDDB dataset
+    print("Loading UCDDB dataset...")
+    dataset = build_ucddb_dataset()
+    print(f"Loaded {len(dataset)} subjects\n")
+
+    # Train with LOSO cross-validation
+    print("Starting Leave-One-Subject-Out cross-validation...")
+    results = train_loso_cv(
+        dataset=dataset,
+        n_epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.lr,
+        save_dir=args.save_dir,
+    )
+
+    print(f"\n{'='*70}")
+    print(f"  Training Complete!")
+    print(f"  Mean Accuracy: {results['mean_accuracy']:.2%}")
+    print(f"  Std Accuracy: {results['std_accuracy']:.2%}")
     print(f"{'='*70}\n")
 
 
@@ -473,45 +219,40 @@ def run_demo(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='OSA Personalized Acoustic Intervention System'
+        description='OSA Personalized Acoustic Intervention System V2'
     )
     parser.add_argument('--mode', type=str, default='demo',
-                       choices=['train', 'evaluate', 'demo'],
+                       choices=['demo', 'evaluate', 'train'],
                        help='Operation mode')
-    parser.add_argument('--algorithm', type=str, default='SAC',
-                       choices=['SAC', 'PPO'],
-                       help='RL algorithm')
-    parser.add_argument('--severity', type=str, default='moderate',
-                       choices=['mild', 'moderate', 'severe'],
-                       help='Patient severity profile')
-    parser.add_argument('--timesteps', type=int, default=100_000,
-                       help='Total training timesteps')
-    parser.add_argument('--save-dir', type=str, default='./osa_models',
-                       help='Directory for model saving')
-    parser.add_argument('--log-dir', type=str, default='./osa_logs',
-                       help='Directory for training logs')
     parser.add_argument('--model-path', type=str, default=None,
-                       help='Path to trained model (for evaluate mode)')
+                       help='Path to trained classifier model')
     parser.add_argument('--episodes', type=int, default=3,
-                       help='Number of demo/eval episodes')
-    parser.add_argument('--n-eval-episodes', type=int, default=20,
-                       help='Number of evaluation episodes')
-    parser.add_argument('--curriculum', action='store_true', default=True,
-                       help='Use curriculum learning')
-    parser.add_argument('--no-curriculum', action='store_false', dest='curriculum')
-    
+                       help='Number of demo episodes')
+    parser.add_argument('--save-dir', type=str, default='./osa_models_v2',
+                       help='Directory for model saving/loading')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Verbose output')
+
+    # Training-specific arguments
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Training epochs per fold')
+    parser.add_argument('--batch-size', type=int, default=128,
+                       help='Training batch size')
+    parser.add_argument('--lr', type=float, default=0.001,
+                       help='Learning rate')
+
     args = parser.parse_args()
-    
-    print(f"\n  OSA Acoustic Intervention System v1.0")
+
+    print(f"\n  OSA Acoustic Intervention System V2")
     print(f"  Mode: {args.mode}")
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    if args.mode == 'train':
-        train_agent(args)
-    elif args.mode == 'evaluate':
-        evaluate_agents(args)
-    elif args.mode == 'demo':
+
+    if args.mode == 'demo':
         run_demo(args)
+    elif args.mode == 'evaluate':
+        run_evaluation(args)
+    elif args.mode == 'train':
+        run_training(args)
 
 
 if __name__ == '__main__':

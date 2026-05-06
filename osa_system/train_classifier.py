@@ -16,6 +16,9 @@ Feature Construction from Annotations:
   Each epoch has: sleep_stage, respiratory_event_type, duration, SpO2_drop
   We construct a 33-dim feature vector that represents what the signal
   processing module would extract from real sensors.
+
+
+  
 """
 
 import os
@@ -39,25 +42,31 @@ from osa_system.system_v2 import StateClassifier, FocalLoss, OSAState, STATE_NAM
 
 def epoch_label_to_features(label: EpochLabel, rng: np.random.Generator) -> np.ndarray:
     """
-    Construct a synthetic 33-dim feature vector from epoch annotations.
-    
-    This simulates what the signal processing module would extract.
+    Construct a synthetic 8-dim feature vector from epoch annotations.
+
+    This simulates what the signal processing module would extract from UCDDB channels.
     Distributions are calibrated from UCDDB annotation statistics:
       - SpO2 drops: mean=6.3%, range 2-30%
       - Event durations: mean=18.3s, range 6-65s
       - Sleep stages: real UCDDB distribution
-    
+
+    8-dimensional features aligned with UCDDB channels:
+      [0] RIP chest amplitude (ribcage)
+      [1] RIP abdominal amplitude (abdo)
+      [2] Respiratory rate (Sum / ribcage)
+      [3] Chest-abdomen phase difference (ribcage + abdo)
+      [4] Snoring RMS (Sound)
+      [5] Body position/supine detection (BodyPos)
+      [6] SpO2 value (SpO2)
+      [7] SpO2 decline slope (SpO2 difference)
+
     When we have full EDF signal access, this function gets replaced
     by real signal processing. The model architecture stays the same.
     """
     state = label.state
     severity = label.severity
     raw_stage = label.sleep_stage_raw
-    
-    # Map raw stage to normalized features
-    # 0=Wake, 1=REM, 2=N1, 3=N2, 4=N3, 5=Artifact
-    sleep_stage_norm = raw_stage / 5.0
-    
+
     if state == SleepState.AWAKE:
         features = _awake_features(rng)
     elif state == SleepState.NORMAL_SLEEP:
@@ -68,171 +77,106 @@ def epoch_label_to_features(label: EpochLabel, rng: np.random.Generator) -> np.n
         features = _apnea_features(label, rng)
     else:
         features = _awake_features(rng)
-    
-    # Ensure exact 33 dimensions
-    assert len(features) == 33, f"Expected 33 features, got {len(features)}"
+
+    # Ensure exact 8 dimensions
+    assert len(features) == 8, f"Expected 8 features, got {len(features)}"
     return np.array(features, dtype=np.float32)
 
 
 def _awake_features(rng) -> List[float]:
-    """Features typical of awake state."""
+    """Features typical of awake state (8 dimensions)."""
     return [
-        # RIP (11): normal but irregular breathing, high movement
-        rng.uniform(0.3, 0.8),   # thorax_amplitude
-        rng.uniform(0.3, 0.8),   # abdomen_amplitude  
-        rng.uniform(0.6, 1.6),   # total_amplitude
-        rng.uniform(0.2, 0.4),   # resp_rate_norm (12-24 bpm)
-        rng.uniform(0.1, 0.4),   # resp_rate_variability (high)
-        rng.uniform(-0.05, 0.05),# phase_angle_norm (near zero)
-        0.0,                      # is_paradoxical
-        rng.uniform(0.3, 0.5),   # flow_limitation_norm
-        rng.uniform(0.2, 0.5),   # resp_effort
-        0.0, 0.0,                # reserved
-        # Audio (9): no snoring
-        rng.uniform(0.0, 0.05),  # snore_rms
-        0.0,                      # snore_f0
-        0.0,                      # f0_confidence
-        0.0,                      # f0_stability
-        rng.uniform(0.1, 0.3),   # spectral_centroid
-        rng.uniform(0.1, 0.3),   # spectral_bandwidth
-        0.0,                      # snore_pattern
-        0.0,                      # intermittency
-        0.0,                      # is_crescendo
-        # IMU (9): variable position, high movement
-        rng.choice([0.0, 1.0]),   # is_supine
-        rng.uniform(-0.5, 0.5),  # pitch
-        rng.uniform(-0.5, 0.5),  # roll
-        rng.uniform(0.3, 0.8),   # position_stability
-        rng.uniform(0.2, 0.8),   # movement_intensity (high)
-        rng.uniform(0.1, 0.5),   # movement_variability (high)
-        0.0, 0.0, 0.0,           # reserved
-        # SpO2 (4): normal
-        rng.uniform(0.8, 1.0),   # spo2_normalized (93-100%)
-        rng.uniform(-0.02, 0.02),# desat_slope (stable)
-        rng.uniform(0.0, 0.1),   # hypoxemia_risk (low)
-        0.0,                      # odi_proxy
+        # [0] RIP chest amplitude (ribcage)
+        rng.uniform(0.3, 0.8),
+        # [1] RIP abdominal amplitude (abdo)
+        rng.uniform(0.3, 0.8),
+        # [2] Respiratory rate (Sum / ribcage)
+        rng.uniform(0.2, 0.4),  # 12-24 bpm normalized
+        # [3] Chest-abdomen phase difference (ribcage + abdo)
+        rng.uniform(-0.05, 0.05),  # Near zero (in-phase)
+        # [4] Snoring RMS (Sound)
+        rng.uniform(0.0, 0.05),  # No snoring
+        # [5] Body position/supine detection (BodyPos)
+        rng.choice([0.0, 1.0]),  # Variable position
+        # [6] SpO2 value (SpO2)
+        rng.uniform(0.8, 1.0),  # 93-100%
+        # [7] SpO2 decline slope (SpO2 difference)
+        rng.uniform(-0.02, 0.02),  # Stable
     ]
 
 
 def _normal_sleep_features(raw_stage: int, rng) -> List[float]:
-    """Features typical of normal sleep (no respiratory events)."""
+    """Features typical of normal sleep (no respiratory events, 8 dimensions)."""
     # Sleep depth affects features
     depth = {1: 0.4, 2: 0.2, 3: 0.5, 4: 0.8, 5: 0.3}.get(raw_stage, 0.3)
-    
+
     return [
-        # RIP (11): regular, relaxed breathing
+        # [0] RIP chest amplitude (ribcage)
         rng.uniform(0.3, 0.6),
+        # [1] RIP abdominal amplitude (abdo)
         rng.uniform(0.3, 0.6),
-        rng.uniform(0.6, 1.2),
-        rng.uniform(0.15, 0.30),  # resp_rate_norm (slower during sleep)
-        rng.uniform(0.02, 0.10),  # low variability
-        rng.uniform(-0.03, 0.03), # phase_angle (in-phase)
-        0.0,
-        rng.uniform(0.3, 0.5),
-        rng.uniform(0.2, 0.4),    # low effort
-        0.0, 0.0,
-        # Audio (9): quiet
-        rng.uniform(0.0, 0.03),
-        0.0, 0.0, 0.0,
-        rng.uniform(0.05, 0.15),
-        rng.uniform(0.05, 0.15),
-        0.0, 0.0, 0.0,
-        # IMU (9): stable, low movement
-        rng.choice([0.0, 1.0], p=[0.5, 0.5]),
-        rng.uniform(-0.3, 0.3),
-        rng.uniform(-0.3, 0.3),
-        rng.uniform(0.7, 1.0),    # high stability
-        rng.uniform(0.0, 0.1),    # low movement
-        rng.uniform(0.0, 0.05),
-        0.0, 0.0, 0.0,
-        # SpO2 (4): normal
-        rng.uniform(0.8, 1.0),
-        rng.uniform(-0.01, 0.01),
-        rng.uniform(0.0, 0.05),
-        0.0,
+        # [2] Respiratory rate (Sum / ribcage)
+        rng.uniform(0.15, 0.30),  # Slower during sleep
+        # [3] Chest-abdomen phase difference (ribcage + abdo)
+        rng.uniform(-0.03, 0.03),  # In-phase
+        # [4] Snoring RMS (Sound)
+        rng.uniform(0.0, 0.03),  # Quiet
+        # [5] Body position/supine detection (BodyPos)
+        rng.choice([0.0, 1.0], p=[0.5, 0.5]),  # 50/50 supine
+        # [6] SpO2 value (SpO2)
+        rng.uniform(0.8, 1.0),  # Normal
+        # [7] SpO2 decline slope (SpO2 difference)
+        rng.uniform(-0.01, 0.01),  # Stable
     ]
 
 
 def _snoring_features(label: EpochLabel, rng) -> List[float]:
-    """Features typical of snoring/hypopnea (partial obstruction)."""
+    """Features typical of snoring/hypopnea (partial obstruction, 8 dimensions)."""
     severity = label.severity
     spo2_drop = (label.spo2_drop or 5.0) / 30.0  # Normalize
-    duration_norm = (label.event_duration or 15) / 60.0
-    
+
     return [
-        # RIP (11): increased effort, partial flow reduction
+        # [0] RIP chest amplitude (ribcage)
         rng.uniform(0.4, 0.7),
+        # [1] RIP abdominal amplitude (abdo)
         rng.uniform(0.3, 0.6),
-        rng.uniform(0.5, 1.0),
-        rng.uniform(0.25, 0.40),   # slightly elevated rate
-        rng.uniform(0.05, 0.20),
-        rng.uniform(0.10, 0.40) * severity,  # phase angle increases with severity
-        0.0 if severity < 0.7 else rng.choice([0.0, 1.0], p=[0.7, 0.3]),
-        rng.uniform(0.5, 0.8),     # some flow limitation
-        rng.uniform(0.4, 0.7) * (0.5 + severity),  # elevated effort
-        0.0, 0.0,
-        # Audio (9): snoring present
-        rng.uniform(0.2, 0.8) * severity,  # snore_rms scales with severity
-        rng.uniform(0.2, 0.6),     # snore_f0 (100-300Hz range normalized)
-        rng.uniform(0.3, 0.8),     # f0_confidence
-        rng.uniform(0.3, 0.7),     # f0_stability
-        rng.uniform(0.2, 0.5),
-        rng.uniform(0.2, 0.4),
-        rng.choice([0.5, 1.0]),     # snore_pattern: sustained or bout
-        rng.uniform(0.1, 0.5),
-        rng.uniform(0.0, 0.5) * severity,  # crescendo more likely with severity
-        # IMU (9)
-        rng.choice([0.0, 1.0], p=[0.4, 0.6]),  # More likely supine during snoring
-        rng.uniform(-0.2, 0.2),
-        rng.uniform(-0.2, 0.2),
-        rng.uniform(0.6, 0.95),
-        rng.uniform(0.0, 0.15),
-        rng.uniform(0.0, 0.08),
-        0.0, 0.0, 0.0,
-        # SpO2 (4): mild desaturation
-        max(0.0, rng.uniform(0.7, 0.95) - spo2_drop),
-        rng.uniform(-0.15, 0.0) * severity,  # declining
-        rng.uniform(0.1, 0.5) * severity,
-        rng.uniform(0.0, 0.3) * severity,
+        # [2] Respiratory rate (Sum / ribcage)
+        rng.uniform(0.25, 0.40),  # Slightly elevated
+        # [3] Chest-abdomen phase difference (ribcage + abdo)
+        rng.uniform(0.10, 0.40) * severity,  # Increases with severity
+        # [4] Snoring RMS (Sound)
+        rng.uniform(0.2, 0.8) * severity,  # Scales with severity
+        # [5] Body position/supine detection (BodyPos)
+        rng.choice([0.0, 1.0], p=[0.4, 0.6]),  # More likely supine
+        # [6] SpO2 value (SpO2)
+        max(0.0, rng.uniform(0.7, 0.95) - spo2_drop),  # Mild desaturation
+        # [7] SpO2 decline slope (SpO2 difference)
+        rng.uniform(-0.15, 0.0) * severity,  # Declining
     ]
 
 
 def _apnea_features(label: EpochLabel, rng) -> List[float]:
-    """Features typical of apnea (complete obstruction)."""
+    """Features typical of apnea (complete obstruction, 8 dimensions)."""
     severity = label.severity
     spo2_drop = (label.spo2_drop or 8.0) / 30.0
-    
+
     return [
-        # RIP (11): high effort, no flow, paradoxical breathing
-        rng.uniform(0.5, 0.9),     # high thorax effort
-        rng.uniform(0.4, 0.8),     # high abdomen effort
-        rng.uniform(0.1, 0.3),     # LOW total amplitude (no airflow)
-        rng.uniform(0.30, 0.45),   # elevated respiratory rate
-        rng.uniform(0.05, 0.15),
-        rng.uniform(0.5, 1.0),     # HIGH phase angle (paradoxical)
-        rng.choice([0.0, 1.0], p=[0.2, 0.8]),  # likely paradoxical
-        rng.uniform(0.7, 1.0),     # high flow limitation
-        rng.uniform(0.7, 1.0),     # HIGH effort
-        0.0, 0.0,
-        # Audio (9): silent (complete obstruction = no airflow = no snoring)
-        rng.uniform(0.0, 0.05),    # SILENT during apnea
-        0.0, 0.0, 0.0,
-        rng.uniform(0.05, 0.15),
-        rng.uniform(0.05, 0.15),
-        0.0, 0.0, 0.0,
-        # IMU (9)
+        # [0] RIP chest amplitude (ribcage)
+        rng.uniform(0.5, 0.9),  # High effort
+        # [1] RIP abdominal amplitude (abdo)
+        rng.uniform(0.4, 0.8),  # High effort
+        # [2] Respiratory rate (Sum / ribcage)
+        rng.uniform(0.30, 0.45),  # Elevated
+        # [3] Chest-abdomen phase difference (ribcage + abdo)
+        rng.uniform(0.5, 1.0),  # HIGH phase angle (paradoxical)
+        # [4] Snoring RMS (Sound)
+        rng.uniform(0.0, 0.05),  # SILENT during apnea (no airflow)
+        # [5] Body position/supine detection (BodyPos)
         rng.choice([0.0, 1.0], p=[0.3, 0.7]),  # Very likely supine
-        rng.uniform(-0.1, 0.1),
-        rng.uniform(-0.1, 0.1),
-        rng.uniform(0.8, 1.0),     # very stable (not moving)
-        rng.uniform(0.0, 0.05),    # minimal movement
-        rng.uniform(0.0, 0.03),
-        0.0, 0.0, 0.0,
-        # SpO2 (4): significant desaturation
+        # [6] SpO2 value (SpO2)
         max(0.0, rng.uniform(0.5, 0.85) - spo2_drop),  # LOW SpO2
-        rng.uniform(-0.3, -0.05),  # declining
-        rng.uniform(0.4, 0.9),     # HIGH hypoxemia risk
-        rng.uniform(0.2, 0.8) * severity,
+        # [7] SpO2 decline slope (SpO2 difference)
+        rng.uniform(-0.3, -0.05),  # Declining
     ]
 
 
@@ -285,8 +229,8 @@ def train_classifier(
     batch_size: int = 128,
 ) -> Tuple[StateClassifier, Dict]:
     """Train the state classifier with focal loss."""
-    
-    model = StateClassifier(input_dim=33)
+
+    model = StateClassifier(input_dim=8)
     
     # Class-weighted sampler for imbalanced data
     class_counts = Counter(train_dataset.states.tolist())
@@ -515,7 +459,9 @@ def quick_train(data_dir: str, test_fraction: float = 0.2, n_epochs: int = 30):
             )
     
     print(f"\n  Test Accuracy: {acc:.4f}")
-    print(f"\n{report}")
+    # Print report without special characters
+    for line in report.split('\n'):
+        print(line.encode('ascii', errors='replace').decode('ascii'))
     
     return model, acc
 
@@ -523,7 +469,7 @@ def quick_train(data_dir: str, test_fraction: float = 0.2, n_epochs: int = 30):
 if __name__ == '__main__':
     import sys
     
-    data_dir = '/app/ucddb_data'
+    data_dir = '/home/physionet.org/files/ucddb/1.0.0'
     
     if len(sys.argv) > 1 and sys.argv[1] == 'loso':
         results = loso_cross_validation(data_dir, n_epochs=50)

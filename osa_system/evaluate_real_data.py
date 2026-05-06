@@ -233,4 +233,4 @@ def run_full_evaluation(data_dir: str):
 
 
 if __name__ == '__main__':
-    results = run_full_evaluation('/app/ucddb_data')
+    results = run_full_evaluation('/home/physionet.org/files/ucddb/1.0.0')

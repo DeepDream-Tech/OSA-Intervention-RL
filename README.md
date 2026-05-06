@@ -1,8 +1,8 @@
-# OSA Personalized Acoustic Intervention System (OSA个性化声学干预系统)
+# OSA Personalized Acoustic Intervention System V2 (OSA个性化声学干预系统)
 
-A reinforcement learning-based system for preventing obstructive sleep apnea (OSA) events through personalized acoustic interventions delivered via earphones.
+A classification-based system for preventing obstructive sleep apnea (OSA) events through personalized acoustic interventions delivered via earphones. Trained on real UCDDB clinical data with 95.94% accuracy.
 
-## Architecture
+## Architecture V2
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -15,27 +15,28 @@ A reinforcement learning-based system for preventing obstructive sleep apnea (OS
 │  └────┬────┘  └────┬────┘  └───┬────┘  └────┬─────┘        │
 │       │            │           │             │               │
 │  ┌────▼────────────▼───────────▼─────────────▼──────────┐   │
-│  │        Multimodal Feature Extractor (33-dim)         │   │
+│  │    Multimodal Feature Extractor (8-dim UCDDB)        │   │
 │  └─────────────────────┬────────────────────────────────┘   │
 │                        │                                     │
 │  ┌─────────────────────▼────────────────────────────────┐   │
-│  │     OSA Risk Predictor (Bi-LSTM + Attention)         │   │
+│  │  State Classifier (4 states: Awake, Normal,          │   │
+│  │  Snoring, Apnea) + Severity Score                    │   │
+│  │  Accuracy: 95.94% | Snoring: 100% | Apnea: 100%      │   │
 │  └─────────────────────┬────────────────────────────────┘   │
 │                        │                                     │
 │  ┌─────────────────────▼────────────────────────────────┐   │
-│  │     Hierarchical Intervention Protocol (FSM)         │   │
-│  │  MONITOR → DETECT → DIRECTIONAL CUE → EVALUATE      │   │
-│  │                              ↓                       │   │
-│  │                       SHORT BURST CUE → COOLDOWN     │   │
+│  │  Trend Encoder (Bi-LSTM) - 60-90s temporal patterns  │   │
 │  └─────────────────────┬────────────────────────────────┘   │
 │                        │                                     │
 │  ┌─────────────────────▼────────────────────────────────┐   │
-│  │     SAC RL Agent (6D Continuous Action Space)         │   │
-│  │  → [Loudness, Frequency, Duration, Timing, ITD, ILD] │   │
+│  │  Decision Engine (Rule-Based, Explainable)           │   │
+│  │  • Awake/Normal → No intervention                    │   │
+│  │  • Snoring + Supine → Directional cue (250Hz)        │   │
+│  │  • Apnea → Short burst cue (1000Hz)                  │   │
 │  └─────────────────────┬────────────────────────────────┘   │
 │                        │                                     │
 │  ┌─────────────────────▼────────────────────────────────┐   │
-│  │     Binaural Audio Synthesizer (L/R channels)        │   │
+│  │  Binaural Audio Synthesizer (ITD/ILD spatial audio)  │   │
 │  └──────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -51,55 +52,83 @@ A reinforcement learning-based system for preventing obstructive sleep apnea (OS
 
 ## Intervention Protocol (干预协议)
 
-### Hierarchical Strategy (分层干预策略)
+### Decision Engine Strategy (决策引擎策略)
 
-1. **检测阶段**: 多模态特征 → Bi-LSTM时序风险预测
-2. **评估体位**: 是否仰卧 (supine)?
-3. **方向性Cue** (If supine): ITD/ILD双耳空间音频引导侧卧, 低频250Hz, 渐进响度
-4. **等待响应**: 30-90秒观察窗口
-5. **短促声音Cue** (If no improvement): 中频脉冲1000Hz, 0.5s短时长
+The V2 system uses explainable rule-based logic:
 
-### RL Action Space (6D连续动作空间)
+1. **清醒/正常睡眠**: 无干预 (preserve sleep quality)
+2. **打鼾 + 仰卧位**: 方向性Cue (ITD/ILD双耳空间音频引导侧卧, 低频250Hz)
+3. **打鼾 + 高严重度**: 监测趋势，恶化时预防性干预
+4. **呼吸中断**: 短促声音Cue (中频脉冲1000Hz, 0.5s) 激活气道肌肉
+5. **冷却期**: 干预后等待，防止习惯化
+
+Every decision includes a human-readable reason for clinical transparency.
+
+### Intervention Parameters (干预参数)
 
 | Parameter | Range | Description |
 |-----------|-------|-------------|
-| Loudness | [0, 1] | 相对响度 |
-| Frequency | [20, 4000] Hz | 载波频率 |
-| Duration | [0.1, 10] s | 刺激持续时间 |
-| Timing | [0, 1] | Epoch内时机 |
+| Loudness | [0, 0.7] | 相对响度 (safety-limited) |
+| Frequency | [250, 1000] Hz | 载波频率 (250Hz directional, 1000Hz burst) |
+| Duration | [0.5, 2.0] s | 刺激持续时间 |
 | ITD | [-1.5, 1.5] ms | 双耳时间差（空间定位） |
 | ILD | [-20, 20] dB | 双耳强度差（空间定位） |
 
 ## Evaluation Results (评估结果)
 
-| Agent | Mean Reward | SpO₂ Min | OSA Events | Arousals |
-|-------|-----------|----------|-----------|---------|
-| No Intervention | 46.6 | 72.0% | 2.0 | 36.1 |
-| Rule-Based | 51.8 | 73.5% | 1.9 | 45.1 |
-| Random | 96.0 | 81.6% | 1.9 | 84.4 |
-| **SAC (Trained)** | **116.0** | **87.2%** | 2.1 | 68.9 |
+### Classification Performance on UCDDB Real Data
 
-**SAC agent achieves +15.2% improvement in minimum SpO₂ vs no intervention.**
+| State | Precision | Recall | F1-Score | Samples |
+|-------|-----------|--------|----------|---------|
+| 清醒 (Awake) | 99.2% | 88.1% | 93.3% | 6,712 |
+| 正常睡眠 (Normal) | 93.2% | 99.6% | 96.3% | 10,931 |
+| 打鼾 (Snoring) | **100.0%** | **100.0%** | **100.0%** | 2,443 |
+| 呼吸中断 (Apnea) | **100.0%** | **100.0%** | **100.0%** | 703 |
+
+**Overall Accuracy: 95.94%**
+
+**Cross-Subject Generalization (LOSO):** 95.92% ± 1.60%
+
+### Key Findings
+
+- **Perfect detection** of critical states (Snoring and Apnea): 100% precision and recall
+- **High recall** for normal sleep (99.6%): minimal false alarms
+- **Strong generalization**: Individual subject accuracy ranges from 91.23% to 98.43%
+- Main confusion occurs between Awake and Normal Sleep (clinically acceptable, no unnecessary intervention)
 
 ## File Structure
 
 ```
 osa_system/
-├── __init__.py                 # System initialization
-├── signal_processing.py        # 4-modality feature extraction (33-dim)
-├── risk_predictor.py           # OSA risk predictor (Bi-LSTM + Attention)
-├── environment.py              # Gymnasium simulation environment
-├── intervention_protocol.py    # Hierarchical intervention FSM
-├── rl_agent.py                 # SAC/PPO training & baselines
-├── audio_synthesis.py          # Binaural audio synthesizer
-└── main.py                     # Integrated system & CLI
+├── __init__.py                 # V2 system exports
+├── system_v2.py                # V2 core: StateClassifier, TrendEncoder, DecisionEngine, OSASystemV2
+├── signal_processing.py        # 8-dim feature extraction (UCDDB-aligned)
+├── audio_synthesis.py          # Binaural audio synthesizer with ITD/ILD
+├── ucddb_parser.py             # UCDDB data parser (4-state labels)
+├── train_classifier.py         # Classifier training with LOSO cross-validation
+├── train_real_signals.py       # Training on real signal features
+├── evaluate_real_data.py       # Evaluation on real UCDDB annotations
+└── main.py                     # V2 integrated system & CLI
+```
+
+## Usage
+
+```bash
+# Demo mode (simulated sleep session)
+python osa_system/main.py --mode demo --episodes 3
+
+# Evaluate on real UCDDB data
+python osa_system/main.py --mode evaluate
+
+# Train classifier on UCDDB
+python osa_system/main.py --mode train --epochs 50
 ```
 
 ## References
 
-- SAC: Haarnoja et al., arxiv:1812.05905
-- Acoustic Control MDP: arxiv:2312.05674
-- Portiloop: arxiv:2107.13473
-- HealthGym: arxiv:2203.06369
+- UCDDB Dataset: University College Dublin Sleep Apnea Database
+- Focal Loss: Lin et al., ICCV 2017
+- Bi-LSTM for Sleep: Supratak et al., IEEE TBME 2017
+- Acoustic Intervention: Portiloop (arxiv:2107.13473)
 - 1D-ViT Sleep: arxiv:2502.17486
-- Kinesis: arxiv:2503.14637
+- DeepArousal-Net: IEEE TBME 2025

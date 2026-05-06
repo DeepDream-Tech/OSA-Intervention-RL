@@ -363,12 +363,109 @@ def build_ucddb_dataset(data_dir: str) -> Dict:
     }
 
 
+def extract_ucddb_features(
+    ribcage: np.ndarray,
+    abdo: np.ndarray,
+    sound: np.ndarray,
+    body_pos: np.ndarray,
+    spo2: np.ndarray,
+    fs: int = 128,
+) -> np.ndarray:
+    """
+    Extract 8 features from UCDDB raw signal channels.
+
+    Args:
+        ribcage: Ribcage RIP signal
+        abdo: Abdominal RIP signal
+        sound: Audio/snoring signal
+        body_pos: Body position signal (0-4: supine, prone, left, right, upright)
+        spo2: SpO2 values
+        fs: Sampling frequency (default 128 Hz for UCDDB)
+
+    Returns:
+        8-dimensional feature vector:
+          [0] RIP chest amplitude (ribcage)
+          [1] RIP abdominal amplitude (abdo)
+          [2] Respiratory rate (from Sum or ribcage)
+          [3] Chest-abdomen phase difference
+          [4] Snoring RMS (Sound)
+          [5] Body position/supine detection (BodyPos)
+          [6] SpO2 value
+          [7] SpO2 decline slope
+    """
+    from scipy.signal import find_peaks
+
+    # [0] RIP chest amplitude
+    chest_amplitude = float(np.std(ribcage))
+
+    # [1] RIP abdominal amplitude
+    abdo_amplitude = float(np.std(abdo))
+
+    # [2] Respiratory rate from ribcage signal
+    sum_signal = ribcage + abdo
+    peaks, _ = find_peaks(sum_signal, distance=int(fs * 1.0))
+    if len(peaks) >= 2:
+        intervals = np.diff(peaks) / fs
+        resp_rate = 60.0 / np.mean(intervals)  # breaths per minute
+    else:
+        resp_rate = 0.0
+    resp_rate_norm = float(np.clip(resp_rate / 60.0, 0, 1))
+
+    # [3] Chest-abdomen phase difference
+    from scipy.signal import hilbert
+    analytic_r = hilbert(ribcage)
+    analytic_a = hilbert(abdo)
+    phase_r = np.angle(analytic_r)
+    phase_a = np.angle(analytic_a)
+    phase_diff = phase_r - phase_a
+    mean_phase_diff = np.arctan2(
+        np.mean(np.sin(phase_diff)),
+        np.mean(np.cos(phase_diff))
+    )
+    phase_angle_norm = float(mean_phase_diff / np.pi)  # Normalize to [-1, 1]
+
+    # [4] Snoring RMS
+    snore_rms = float(np.sqrt(np.mean(sound ** 2)))
+    snore_rms_norm = float(np.clip(snore_rms * 10, 0, 1))
+
+    # [5] Body position/supine detection
+    # BodyPos: 0=supine, 1=prone, 2=left, 3=right, 4=upright
+    mean_pos = np.mean(body_pos)
+    is_supine = float(mean_pos < 0.5)  # Position 0 = supine
+
+    # [6] SpO2 value
+    valid_spo2 = spo2[(spo2 > 50) & (spo2 <= 100)]
+    if len(valid_spo2) > 0:
+        spo2_value = float(np.mean(valid_spo2))
+    else:
+        spo2_value = 95.0
+    spo2_norm = float(np.clip((spo2_value - 70.0) / 30.0, 0.0, 1.0))
+
+    # [7] SpO2 decline slope
+    if len(valid_spo2) >= 3:
+        slope = np.polyfit(np.arange(len(valid_spo2)), valid_spo2, 1)[0]
+        desat_slope = float(slope)
+    else:
+        desat_slope = 0.0
+
+    return np.array([
+        chest_amplitude,
+        abdo_amplitude,
+        resp_rate_norm,
+        phase_angle_norm,
+        snore_rms_norm,
+        is_supine,
+        spo2_norm,
+        desat_slope,
+    ], dtype=np.float32)
+
+
 if __name__ == '__main__':
     import json
-    
-    dataset = build_ucddb_dataset('/app/ucddb_data')
+
+    dataset = build_ucddb_dataset('/home/physionet.org/files/ucddb/1.0.0')
     stats = dataset['statistics']
-    
+
     print("=" * 60)
     print("  UCDDB Dataset Summary")
     print("=" * 60)

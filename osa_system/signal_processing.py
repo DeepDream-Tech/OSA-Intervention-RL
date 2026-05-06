@@ -713,15 +713,19 @@ class MultimodalFeatureExtractor:
     """
     Orchestrates all four sensor processors and produces a unified feature vector
     for the OSA risk predictor and RL agent.
-    
-    Feature vector layout (33 dimensions):
-      [0:11]  RIP features (11)
-      [11:20] Audio features (9) 
-      [20:29] IMU features (9)
-      [29:39] SpO2 features (10)
+
+    Feature vector layout (8 dimensions) - UCDDB-aligned:
+      [0] RIP chest amplitude (ribcage)
+      [1] RIP abdominal amplitude (abdo)
+      [2] Respiratory rate (Sum / ribcage)
+      [3] Chest-abdomen phase difference (ribcage + abdo)
+      [4] Snoring RMS (Sound)
+      [5] Body position/supine detection (BodyPos)
+      [6] SpO2 value (SpO2)
+      [7] SpO2 decline slope (SpO2 difference)
     """
-    
-    FEATURE_DIM = 33  # Total number of scalar features
+
+    FEATURE_DIM = 8  # Total number of scalar features
     
     def __init__(self, config: SignalConfig = None):
         self.config = config or SignalConfig()
@@ -740,10 +744,10 @@ class MultimodalFeatureExtractor:
         spo2_values: np.ndarray,
     ) -> Tuple[np.ndarray, Dict[str, Dict]]:
         """
-        Extract features from all modalities for one epoch.
-        
+        Extract 8 UCDDB-aligned features from all modalities for one epoch.
+
         Returns:
-            feature_vector: np.ndarray of shape (33,) - normalized features
+            feature_vector: np.ndarray of shape (8,) - normalized features
             raw_features: Dict of dicts from each processor
         """
         # Extract from each modality
@@ -751,56 +755,39 @@ class MultimodalFeatureExtractor:
         audio_feats = self.audio.extract_features(audio)
         imu_feats = self.imu.extract_features(accel, gyro)
         spo2_feats = self.spo2.extract_features(spo2_values)
-        
-        # Assemble scalar feature vector
+
+        # Assemble 8-dimensional feature vector aligned with UCDDB channels
         feature_vector = np.array([
-            # RIP (11 features)
+            # [0] RIP chest amplitude (ribcage)
             rip_feats['thorax_amplitude'],
+
+            # [1] RIP abdominal amplitude (abdo)
             rip_feats['abdomen_amplitude'],
-            rip_feats['total_amplitude'],
+
+            # [2] Respiratory rate (Sum / ribcage)
             rip_feats['resp_rate'] / 60.0,  # Normalize to [0, 1]
-            rip_feats['resp_rate_variability'],
+
+            # [3] Chest-abdomen phase difference (ribcage + abdo)
             rip_feats['phase_angle'] / 180.0,  # Normalize to [-1, 1]
-            rip_feats['is_paradoxical'],
-            rip_feats['flow_limitation'] / 5.0,  # Normalize
-            rip_feats['resp_effort'],
-            0.0,  # Reserved
-            0.0,  # Reserved
-            
-            # Audio (9 features)
+
+            # [4] Snoring RMS (Sound)
             min(audio_feats['snore_rms'] * 10, 1.0),  # Normalize
-            audio_feats['snore_f0'] / 500.0,           # Normalize to ~[0, 1]
-            audio_feats['f0_confidence'],
-            audio_feats['f0_stability'],
-            audio_feats['spectral_centroid'] / 2000.0,  # Normalize
-            audio_feats['spectral_bandwidth'] / 1000.0, # Normalize
-            audio_feats['snore_pattern'] / 2.0,         # Normalize to [0, 1]
-            audio_feats['intermittency'],
-            audio_feats['is_crescendo'],
-            
-            # IMU (4 scalar features - position_name excluded)
+
+            # [5] Body position/supine detection (BodyPos)
             imu_feats['is_supine'],
-            imu_feats['pitch'] / 90.0,              # Normalize to [-1, 1]
-            imu_feats['roll'] / 180.0,               # Normalize to [-1, 1]
-            imu_feats['position_stability'],
-            imu_feats['movement_intensity'],
-            imu_feats['movement_variability'],
-            0.0,  # Reserved
-            0.0,  # Reserved
-            0.0,  # Reserved
-            
-            # SpO2 (4 features)
+
+            # [6] SpO2 value (SpO2)
             spo2_feats['spo2_normalized'],
+
+            # [7] SpO2 decline slope (SpO2 difference)
             spo2_feats['desat_slope'],
-            spo2_feats['hypoxemia_risk'],
-            spo2_feats['odi_proxy'] / 30.0,  # Normalize (severe OSA = 30+/hr)
         ], dtype=np.float32)
-        
+
         raw_features = {
             'rip': rip_feats,
             'audio': audio_feats,
             'imu': imu_feats,
             'spo2': spo2_feats,
         }
-        
+
         return feature_vector, raw_features

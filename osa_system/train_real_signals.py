@@ -101,142 +101,70 @@ def extract_epoch_features(
     fs: float = 8.0,
 ) -> np.ndarray:
     """
-    Extract 33-dim feature vector from real signals for one 30s epoch.
-    
+    Extract 8-dim feature vector from real signals for one 30s epoch (UCDDB-aligned).
+
     All signals at 8 Hz, so each epoch = 240 samples.
+
+    8 features:
+      [0] RIP chest amplitude (ribcage)
+      [1] RIP abdominal amplitude (abdo)
+      [2] Respiratory rate (Sum / ribcage)
+      [3] Chest-abdomen phase difference (ribcage + abdo)
+      [4] Snoring RMS (Sound)
+      [5] Body position/supine detection (BodyPos)
+      [6] SpO2 value (SpO2)
+      [7] SpO2 decline slope (SpO2 difference)
     """
-    n = len(ribcage)
-    
-    # ---- RIP Features (11) ----
-    # Respiratory amplitude
-    thorax_amp = float(np.std(ribcage))
-    abdo_amp = float(np.std(abdo))
-    total_amp = thorax_amp + abdo_amp
-    
-    # Respiratory rate via peak detection  
+    # [0] RIP chest amplitude (ribcage)
+    chest_amplitude = float(np.std(ribcage))
+
+    # [1] RIP abdominal amplitude (abdo)
+    abdo_amplitude = float(np.std(abdo))
+
+    # [2] Respiratory rate (Sum / ribcage)
     sum_signal = ribcage + abdo
     try:
         peaks, _ = find_peaks(sum_signal, distance=int(fs * 1.5), height=0)
         if len(peaks) >= 2:
             intervals = np.diff(peaks) / fs
             resp_rate = 60.0 / np.mean(intervals)
-            resp_rate_var = np.std(intervals) / (np.mean(intervals) + 1e-8)
         else:
             resp_rate = 0.0
-            resp_rate_var = 0.0
     except:
         resp_rate = 12.0
-        resp_rate_var = 0.0
-    
-    # Phase angle (Hilbert transform)
+    resp_rate_norm = float(np.clip(resp_rate / 60.0, 0, 1))
+
+    # [3] Chest-abdomen phase difference (ribcage + abdo)
     try:
         phase_t = np.angle(hilbert(ribcage))
         phase_a = np.angle(hilbert(abdo))
         phase_diff = phase_t - phase_a
-        phase_angle = float(np.degrees(np.arctan2(
+        mean_phase_diff = float(np.arctan2(
             np.mean(np.sin(phase_diff)),
             np.mean(np.cos(phase_diff))
-        )))
+        ))
+        phase_angle_norm = mean_phase_diff / np.pi  # Normalize to [-1, 1]
     except:
-        phase_angle = 0.0
-    
-    is_paradoxical = float(abs(phase_angle) > 90.0)
-    
-    # Flow limitation
-    inspiratory = flow[flow > 0]
-    if len(inspiratory) > 5:
-        flow_limitation = float(np.percentile(inspiratory, 95) / (np.mean(inspiratory) + 1e-8))
-    else:
-        flow_limitation = 5.0
-    
-    # Respiratory effort
-    resp_effort = total_amp / (total_amp + 1e-8)
-    
-    rip_features = [
-        thorax_amp,
-        abdo_amp,
-        total_amp,
-        np.clip(resp_rate, 0, 60) / 60.0,
-        resp_rate_var,
-        phase_angle / 180.0,
-        is_paradoxical,
-        np.clip(flow_limitation / 5.0, 0, 2),
-        resp_effort,
-        0.0, 0.0,  # reserved
-    ]
-    
-    # ---- Audio/Sound Features (9) ----
+        phase_angle_norm = 0.0
+
+    # [4] Snoring RMS (Sound)
     sound_rms = float(np.sqrt(np.mean(sound ** 2)))
-    
-    # F0 estimation via autocorrelation
-    try:
-        ac = np.correlate(sound, sound, mode='full')[n-1:]
-        ac = ac / (ac[0] + 1e-12)
-        min_lag = max(1, int(fs / 5))  # max 5 Hz  
-        max_lag = min(int(fs / 0.5), len(ac) - 1)  # min 0.5 Hz
-        if min_lag < max_lag:
-            search = ac[min_lag:max_lag]
-            peak_idx = np.argmax(search) + min_lag
-            f0_confidence = float(ac[peak_idx])
-            f0 = fs / peak_idx if f0_confidence > 0.3 else 0.0
-        else:
-            f0, f0_confidence = 0.0, 0.0
-    except:
-        f0, f0_confidence = 0.0, 0.0
-    
-    # Spectral features
-    try:
-        freqs, psd = welch(sound, fs=fs, nperseg=min(64, n))
-        total_power = np.sum(psd) + 1e-12
-        spectral_centroid = float(np.sum(freqs * psd) / total_power)
-        spectral_bw = float(np.sqrt(np.sum(((freqs - spectral_centroid)**2) * psd) / total_power))
-    except:
-        spectral_centroid, spectral_bw = 0.0, 0.0
-    
-    audio_features = [
-        min(sound_rms * 100, 1.0),  # Normalize
-        f0 / 5.0,  # Normalize (max ~4 Hz at 8 Hz sampling)
-        f0_confidence,
-        0.0,  # f0_stability (need previous epoch)
-        spectral_centroid / 4.0,
-        spectral_bw / 2.0,
-        float(sound_rms > 0.005),  # Snore present
-        0.0,  # intermittency
-        0.0,  # crescendo
-    ]
-    
-    # ---- IMU/Position Features (9) ----
+    snore_rms_norm = float(np.clip(sound_rms * 100, 0, 1))
+
+    # [5] Body position/supine detection (BodyPos)
     # UCDDB BodyPos: typically 1=left, 2=right, 3=prone, 4=supine, 5=upright
     mean_pos = float(np.mean(bodypos))
     is_supine = float(abs(mean_pos - 4.0) < 0.5)  # Position ~4 = supine
-    
-    # Position stability
-    pos_std = float(np.std(bodypos))
-    pos_stability = float(1.0 / (1.0 + pos_std))
-    
-    # Movement from position variance
-    movement = float(np.var(np.diff(bodypos)))
-    
-    imu_features = [
-        is_supine,
-        0.0,  # pitch (not available from single position channel)
-        0.0,  # roll
-        pos_stability,
-        movement,
-        float(np.std(np.diff(bodypos))),
-        0.0, 0.0, 0.0,  # reserved
-    ]
-    
-    # ---- SpO2 Features (4) ----
+
+    # [6] SpO2 value (SpO2)
     valid_spo2 = spo2[(spo2 > 50) & (spo2 <= 100)]
     if len(valid_spo2) > 0:
         mean_spo2 = float(np.mean(valid_spo2))
         spo2_norm = np.clip((mean_spo2 - 70.0) / 30.0, 0, 1)
     else:
-        mean_spo2 = 95.0
         spo2_norm = 0.83
-    
-    # SpO2 trend (slope)
+
+    # [7] SpO2 decline slope (SpO2 difference)
     try:
         if len(valid_spo2) > 2:
             slope = np.polyfit(np.arange(len(valid_spo2)), valid_spo2, 1)[0]
@@ -244,20 +172,21 @@ def extract_epoch_features(
             slope = 0.0
     except:
         slope = 0.0
-    
-    hypoxemia_risk = float(1.0 / (1.0 + np.exp(0.5 * (mean_spo2 - 90.0))))
-    
-    spo2_features = [
+    desat_slope = float(slope)
+
+    # Assemble 8-dim vector
+    features = [
+        chest_amplitude,
+        abdo_amplitude,
+        resp_rate_norm,
+        phase_angle_norm,
+        snore_rms_norm,
+        is_supine,
         spo2_norm,
-        np.clip(slope / 2.0, -1, 1),
-        hypoxemia_risk,
-        0.0,  # ODI proxy (need longer history)
+        desat_slope,
     ]
-    
-    # Assemble 33-dim vector
-    features = rip_features + audio_features + imu_features + spo2_features
-    assert len(features) == 33, f"Got {len(features)} features, expected 33"
-    
+    assert len(features) == 8, f"Got {len(features)} features, expected 8"
+
     return np.array(features, dtype=np.float32)
 
 
@@ -273,10 +202,10 @@ def build_real_feature_dataset(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Extract features from real signals for each labeled epoch.
-    
+
     Returns:
-        features: (n_epochs, 33) 
-        states: (n_epochs,) 
+        features: (n_epochs, 8) - UCDDB-aligned features
+        states: (n_epochs,)
         severities: (n_epochs,)
     """
     fs = 8.0  # All respiratory channels at 8 Hz
@@ -408,15 +337,10 @@ def train_and_evaluate_real(data_dir: str):
     # 4. Feature statistics (sanity check)
     print(f"\n  Feature statistics (real signals):")
     feat_names = [
-        'thorax_amp', 'abdo_amp', 'total_amp', 'resp_rate', 'resp_rate_var',
-        'phase_angle', 'is_paradoxical', 'flow_limit', 'resp_effort', 'rsv1', 'rsv2',
-        'sound_rms', 'f0', 'f0_conf', 'f0_stab', 'spec_cent', 'spec_bw',
-        'snore_present', 'intermit', 'crescendo',
-        'is_supine', 'pitch', 'roll', 'pos_stab', 'movement', 'mov_var',
-        'rsv3', 'rsv4', 'rsv5',
-        'spo2_norm', 'spo2_slope', 'hypox_risk', 'odi'
+        'chest_amp', 'abdo_amp', 'resp_rate', 'phase_diff',
+        'snore_rms', 'is_supine', 'spo2_norm', 'spo2_slope'
     ]
-    for i, name in enumerate(feat_names[:15]):
+    for i, name in enumerate(feat_names):
         vals = X[:, i]
         print(f"    {name:15s}: mean={np.mean(vals):.4f}  std={np.std(vals):.4f}  range=[{np.min(vals):.3f}, {np.max(vals):.3f}]")
     
@@ -455,7 +379,7 @@ def train_and_evaluate_real(data_dir: str):
     X_test_norm = (X_test - feat_mean) / feat_std
     
     # 7. Train classifier
-    model = StateClassifier(input_dim=33, hidden_dim=128)
+    model = StateClassifier(input_dim=8, hidden_dim=128)
     
     # Weighted sampler for class imbalance
     class_counts = Counter(y_train.tolist())
@@ -564,4 +488,4 @@ def train_and_evaluate_real(data_dir: str):
 
 
 if __name__ == '__main__':
-    results = train_and_evaluate_real('/app/ucddb_data')
+    results = train_and_evaluate_real('/home/physionet.org/files/ucddb/1.0.0')
