@@ -29,8 +29,8 @@ from datetime import datetime
 from collections import Counter
 
 # V2 System components
-from .system_v2 import (
-    OSASystemV2, StateClassifier, DecisionEngine, TrendEncoder,
+from .system import (
+    OSASystem, StateClassifier, DecisionEngine, TrendEncoder,
     OSAState, STATE_NAMES, InterventionDecision
 )
 from .signal_processing import SignalConfig, MultimodalFeatureExtractor
@@ -49,11 +49,11 @@ def run_demo(args):
     print("="*70 + "\n")
 
     # Initialize V2 system
-    system = OSASystemV2()
+    system = OSASystem()
     audio_synth = AudioSynthesizer()
 
     # Load trained classifier if available
-    model_path = args.model_path or './osa_models_v2/classifier_real.pt'
+    model_path = args.model_path or './osa_models/classifier_real.pt'
     if os.path.exists(model_path):
         system.classifier.load_state_dict(torch.load(model_path))
         print(f"[System] Loaded classifier from {model_path}")
@@ -228,7 +228,7 @@ def main():
                        help='Path to trained classifier model')
     parser.add_argument('--episodes', type=int, default=3,
                        help='Number of demo episodes')
-    parser.add_argument('--save-dir', type=str, default='./osa_models_v2',
+    parser.add_argument('--save-dir', type=str, default='./osa_models',
                        help='Directory for model saving/loading')
     parser.add_argument('--verbose', action='store_true',
                        help='Verbose output')

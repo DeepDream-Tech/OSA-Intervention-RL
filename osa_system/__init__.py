@@ -13,8 +13,8 @@
 __version__ = "2.0.0"
 
 # V2 Core Components
-from osa_system.system_v2 import (
-    OSASystemV2,
+from osa_system.system import (
+    OSASystem,
     StateClassifier,
     DecisionEngine,
     TrendEncoder,
@@ -43,7 +43,7 @@ from osa_system.ucddb_parser import (
 
 __all__ = [
     # V2 System
-    'OSASystemV2',
+    'OSASystem',
     'StateClassifier',
     'DecisionEngine',
     'TrendEncoder',

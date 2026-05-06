@@ -33,7 +33,7 @@ from collections import Counter
 from typing import Dict, List, Tuple
 
 from osa_system.ucddb_parser import build_ucddb_dataset, SleepState, EpochLabel
-from osa_system.system_v2 import StateClassifier, FocalLoss, OSAState, STATE_NAMES
+from osa_system.system import StateClassifier, FocalLoss, OSAState, STATE_NAMES
 
 
 # =============================================================================

@@ -534,7 +534,7 @@ class DecisionEngine:
 # 4. Integrated System V2
 # =============================================================================
 
-class OSASystemV2:
+class OSASystem:
     """
     Complete integrated system with the new architecture.
     

@@ -21,10 +21,10 @@ The new 8-dimensional feature vector maps directly to UCDDB channels:
 
 ## Files Modified
 
-### 1. `osa_system/system_v2.py`
+### 1. `osa_system/system.py`
 - **StateClassifier**: Changed `input_dim` default from 33 → 8
 - **TrendEncoder**: Changed `input_dim` default from 33 → 8
-- **OSASystemV2**: Updated to use 8-dimensional features
+- **OSASystem**: Updated to use 8-dimensional features
 - Updated documentation to reflect UCDDB-aligned features
 
 ### 2. `osa_system/signal_processing.py`
@@ -65,8 +65,8 @@ All models now correctly use 8-dimensional input:
 StateClassifier().input_dim = 8
 TrendEncoder().input_dim = 8
 MultimodalFeatureExtractor.FEATURE_DIM = 8
-OSASystemV2().classifier.input_dim = 8
-OSASystemV2().trend_encoder.input_dim = 8
+OSASystem().classifier.input_dim = 8
+OSASystem().trend_encoder.input_dim = 8
 ```
 
 ## Feature Extraction Functions
@@ -128,7 +128,7 @@ The training pipeline remains the same, but now uses 8 features:
 ## Next Steps
 
 1. Retrain the state classifier on UCDDB data with 8 features
-2. Update saved model files in `osa_models_v2/`
+2. Update saved model files in `osa_models/`
 3. Verify performance metrics match or exceed previous 33-dim results
 4. Update any external scripts that depend on feature dimensions
 
@@ -152,8 +152,8 @@ print('✓ Feature extraction working correctly')
 
 # Test model dimensions
 python3 -c "
-from osa_system.system_v2 import OSASystemV2
-system = OSASystemV2()
+from osa_system.system import OSASystem
+system = OSASystem()
 assert system.classifier.input_dim == 8
 assert system.trend_encoder.input_dim == 8
 print('✓ Model dimensions correct')

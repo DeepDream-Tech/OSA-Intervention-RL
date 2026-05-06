@@ -266,7 +266,7 @@ def train_and_evaluate_real(data_dir: str):
     from collections import Counter
     
     from osa_system.ucddb_parser import build_ucddb_dataset
-    from osa_system.system_v2 import StateClassifier, FocalLoss, STATE_NAMES
+    from osa_system.system import StateClassifier, FocalLoss, STATE_NAMES
     
     print("=" * 70)
     print("  Training Classifier on REAL UCDDB Signals")
@@ -469,7 +469,7 @@ def train_and_evaluate_real(data_dir: str):
         print()
     
     # Save model and normalization stats
-    save_dir = os.path.join(data_dir, '..', 'osa_models_v2')
+    save_dir = os.path.join(data_dir, '..', 'osa_models')
     os.makedirs(save_dir, exist_ok=True)
     
     torch.save(model.state_dict(), os.path.join(save_dir, 'classifier_real.pt'))

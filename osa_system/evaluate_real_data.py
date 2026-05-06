@@ -21,7 +21,7 @@ from typing import Dict, List
 import json
 
 from osa_system.ucddb_parser import build_ucddb_dataset, SleepState, EpochLabel
-from osa_system.system_v2 import (
+from osa_system.system import (
     DecisionEngine, TrendEncoder, OSAState, STATE_NAMES, InterventionDecision
 )
 

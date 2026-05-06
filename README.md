@@ -1,8 +1,8 @@
-# OSA Personalized Acoustic Intervention System V2 (OSA个性化声学干预系统)
+# OSA Personalized Acoustic Intervention System (OSA个性化声学干预系统)
 
 A classification-based system for preventing obstructive sleep apnea (OSA) events through personalized acoustic interventions delivered via earphones. Trained on real UCDDB clinical data with 95.94% accuracy.
 
-## Architecture V2
+## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -54,7 +54,7 @@ A classification-based system for preventing obstructive sleep apnea (OSA) event
 
 ### Decision Engine Strategy (决策引擎策略)
 
-The V2 system uses explainable rule-based logic:
+The system uses explainable rule-based logic:
 
 1. **清醒/正常睡眠**: 无干预 (preserve sleep quality)
 2. **打鼾 + 仰卧位**: 方向性Cue (ITD/ILD双耳空间音频引导侧卧, 低频250Hz)
@@ -100,15 +100,15 @@ Every decision includes a human-readable reason for clinical transparency.
 
 ```
 osa_system/
-├── __init__.py                 # V2 system exports
-├── system_v2.py                # V2 core: StateClassifier, TrendEncoder, DecisionEngine, OSASystemV2
+├── __init__.py                 # System exports
+├── system.py                # Core: StateClassifier, TrendEncoder, DecisionEngine, OSASystem
 ├── signal_processing.py        # 8-dim feature extraction (UCDDB-aligned)
 ├── audio_synthesis.py          # Binaural audio synthesizer with ITD/ILD
 ├── ucddb_parser.py             # UCDDB data parser (4-state labels)
 ├── train_classifier.py         # Classifier training with LOSO cross-validation
 ├── train_real_signals.py       # Training on real signal features
 ├── evaluate_real_data.py       # Evaluation on real UCDDB annotations
-└── main.py                     # V2 integrated system & CLI
+└── main.py                     # Integrated system & CLI
 ```
 
 ## Usage
