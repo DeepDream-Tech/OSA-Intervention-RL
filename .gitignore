@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+.vscode/
+tmp_demo_sessions/
+.DS_Store
