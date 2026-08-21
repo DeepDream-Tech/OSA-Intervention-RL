@@ -1,0 +1,7 @@
+# Minimal dependencies for running the fuzzy controller and offline replay tools.
+#
+# - numpy/scipy: controller math + bundled BreathFinder
+# - matplotlib: plot_session_overview.py
+numpy>=1.26,<2
+scipy
+matplotlib

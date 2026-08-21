@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
@@ -43,6 +43,12 @@ class DataPacketSample:
     rip_fs: float = 25.0
     spo2_pct: Optional[float] = None
     pulse_rate: Optional[float] = None
+    movement_detected: bool = False
+    posture_changed: bool = False
+
+
+DEFAULT_MOVEMENT_ORIENTATION_DELTA_THRESHOLD = 25.0
+DEFAULT_MOVEMENT_AXIS_STD_SUM_THRESHOLD = 380.0
 
 
 class AwakeButtonPlaceholder:
@@ -210,6 +216,7 @@ class ChestbandDataPacketReader:
         self.rip_fs = float(rip_fs)
         self.button_source = button_source or SpacebarAwakeButtonSource()
         self.last_sample: Optional[DataPacketSample] = None
+        self._prev_accel_orientation: Optional[np.ndarray] = None
 
     def close(self) -> None:
         close = getattr(self.button_source, 'close', None)
@@ -259,6 +266,12 @@ class ChestbandDataPacketReader:
         ts = float(timestamp if timestamp is not None else time.time())
         button = self.button_source.read_batch(len(rip_arr), timestamp=ts)
         vitals = getattr(dp, "vitals", None)
+        movement_detected, posture_changed, self._prev_accel_orientation = detect_packet_motion_state(
+            getattr(dp, "accel_x", None),
+            getattr(dp, "accel_y", None),
+            getattr(dp, "accel_z", None),
+            prev_orientation=self._prev_accel_orientation,
+        )
         sample = DataPacketSample(
             timestamp=ts,
             rip=rip_arr,
@@ -267,6 +280,8 @@ class ChestbandDataPacketReader:
             rip_fs=self.rip_fs,
             spo2_pct=_optional_float(getattr(vitals, "spo2_pct", None) if vitals else None),
             pulse_rate=_optional_float(getattr(vitals, "pulse_rate", None) if vitals else None),
+            movement_detected=movement_detected,
+            posture_changed=posture_changed,
         )
         self.last_sample = sample
         return sample
@@ -291,7 +306,94 @@ def update_controller_from_datapacket(
         button=sample.awake_button,
         spo2_pct=sample.spo2_pct,
         timestamp=sample.timestamp,
+        movement_detected=sample.movement_detected,
+        posture_changed=getattr(sample, "posture_changed", False),
     )
+
+
+def detect_packet_motion_state(
+    accel_x: Any,
+    accel_y: Any,
+    accel_z: Any,
+    *,
+    prev_orientation: Optional[np.ndarray] = None,
+    orientation_delta_threshold: float = DEFAULT_MOVEMENT_ORIENTATION_DELTA_THRESHOLD,
+    axis_std_sum_threshold: float = DEFAULT_MOVEMENT_AXIS_STD_SUM_THRESHOLD,
+) -> tuple[bool, bool, Optional[np.ndarray]]:
+    x = _coerce_accel_axis(accel_x)
+    y = _coerce_accel_axis(accel_y)
+    z = _coerce_accel_axis(accel_z)
+    count = min(len(x), len(y), len(z))
+    if count <= 0:
+        return False, False, prev_orientation
+
+    x = x[:count]
+    y = y[:count]
+    z = z[:count]
+    orientation = np.asarray(
+        [
+            float(np.mean(x)),
+            float(np.mean(y)),
+            float(np.mean(z)),
+        ],
+        dtype=np.float32,
+    )
+    axis_std_sum = float(np.std(x) + np.std(y) + np.std(z))
+    orientation_delta = 0.0
+    if prev_orientation is not None and len(prev_orientation) == 3:
+        orientation_delta = float(
+            np.linalg.norm(orientation - np.asarray(prev_orientation, dtype=np.float32))
+        )
+
+    posture_changed = bool(orientation_delta >= float(orientation_delta_threshold))
+    movement_detected = bool(
+        axis_std_sum >= float(axis_std_sum_threshold)
+        or posture_changed
+    )
+    return movement_detected, posture_changed, orientation
+
+
+def detect_packet_movement(
+    accel_x: Any,
+    accel_y: Any,
+    accel_z: Any,
+    *,
+    prev_orientation: Optional[np.ndarray] = None,
+    orientation_delta_threshold: float = DEFAULT_MOVEMENT_ORIENTATION_DELTA_THRESHOLD,
+    axis_std_sum_threshold: float = DEFAULT_MOVEMENT_AXIS_STD_SUM_THRESHOLD,
+) -> tuple[bool, Optional[np.ndarray]]:
+    """Detect a likely body movement from one accelerometer packet.
+
+    We use two cheap packet-level features that transfer well between realtime
+    packets and offline ``.npz`` replay:
+
+    - change in the mean 3-axis orientation vector versus the previous packet
+    - summed within-packet axis standard deviation
+    """
+    movement_detected, _, orientation = detect_packet_motion_state(
+        accel_x,
+        accel_y,
+        accel_z,
+        prev_orientation=prev_orientation,
+        orientation_delta_threshold=orientation_delta_threshold,
+        axis_std_sum_threshold=axis_std_sum_threshold,
+    )
+    return movement_detected, orientation
+
+
+def _coerce_accel_axis(values: Any) -> np.ndarray:
+    if values is None:
+        return np.asarray([], dtype=np.float32)
+    try:
+        arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return np.asarray([], dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    finite = np.isfinite(arr)
+    if finite.all():
+        return arr
+    return arr[finite]
 
 
 def _optional_float(value: Any) -> Optional[float]:
