@@ -132,3 +132,11 @@ python osa_system/main.py --mode train --epochs 50
 - Acoustic Intervention: Portiloop (arxiv:2107.13473)
 - 1D-ViT Sleep: arxiv:2502.17486
 - DeepArousal-Net: IEEE TBME 2025
+
+## 交接信息
+
+- 当前仓库是分类式 OSA 声学干预研究原型，远程仓库为 `DeepDream-Tech/OSA-Intervention-RL`。
+- `internship/fuzzy` 是同一远程仓库的 `FUZZY-V1` 实验分支；三个 `osa-intervention-*` 目录是 Hugging Face 模型版本，不是可直接替换的代码分支。
+- 运行前确认 UCDDB 数据位置、模型权重路径、Python/Torch 版本和音频输出设备。仓库内没有随项目分发临床数据。
+- README 中的指标必须与评估脚本、数据划分和 commit 绑定；复现前不要把它们当作产品指标。
+- 这是研究原型，不是医疗器械，不可用于诊断或治疗。模型、数据和实验报告的发布权限需要项目负责人确认。
